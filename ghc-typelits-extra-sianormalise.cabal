@@ -2,6 +2,8 @@ name: ghc-typelits-extra-sianormalise
 cabal-version: >= 1.24
 build-type: Simple
 version: 0.0.1
+license: MIT
+license-file: LICENSE
 
 library
   default-language: Haskell2010

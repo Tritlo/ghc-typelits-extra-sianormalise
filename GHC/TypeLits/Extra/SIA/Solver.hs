@@ -93,7 +93,6 @@ solveTLE tried tyCons ct@(CNonCanonical{}) =
                       let np1 = mkTyConApp top_con [kind, kind, ty1, ty2]
                           np2 = mkTyConApp top_con [kind, kind, ty1, lhs_ty]
                           sol = (mkProof "Idempotent" Nominal np1 np2, ct)
-                      tcPluginIO $ putStrLn "Try Idempotent" 
                       cts <- mapM (newNonCanonicalCt (ctLoc ct)) [np1,np2]
                       (tcPluginIO $ putStrLn $ showSDocUnsafe $ ppr cts)
                       return $ if (TST np1) `Set.member` tried then Nothing else Just (sol, cts)

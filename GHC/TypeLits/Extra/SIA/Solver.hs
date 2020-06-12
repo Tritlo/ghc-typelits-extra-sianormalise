@@ -9,11 +9,28 @@ import Data.Maybe (catMaybes)
 import Control.Monad (when, guard)
 import TcEvidence
 import Predicate (isEqPrimPred)
+import Data.IORef 
+import Data.Function (on)
+import Data.Set (Set)
+import qualified Data.Set as Set
 
 import Data.List (isPrefixOf)
 
 symmetricIdempotentAssociativeTyCons :: [String]
-symmetricIdempotentAssociativeTyCons = ["Max"]
+symmetricIdempotentAssociativeTyCons = ["Max", "Min"]
+
+-- Wrapper for Type that we can Ord
+data TySetTy = TST Type
+
+instance Outputable TySetTy where
+    ppr (TST t) = ppr t
+
+instance Eq TySetTy where
+  TST ty1 == TST ty2 = eqType ty1 ty2
+
+instance Ord TySetTy where
+  compare (TST ty1) (TST ty2) = nonDetCmpType ty1 ty2
+
 
 plugin :: Plugin
 plugin = defaultPlugin { tcPlugin = Just . extraExtraPlugin
@@ -25,57 +42,87 @@ extraExtraPlugin opts = TcPlugin initialize solve stop
     -- You can add more TyCons with 
     -- -fplugin-opt=GHC.TypeLits.Extra.SIA.Solver:--tc=Min
     additionalCons = map (drop 5) $ filter (isPrefixOf "--tc=") $ opts
-    initialize = return ()
-    solve :: () -> [Ct] -> [Ct] -> [Ct] -> TcPluginM TcPluginResult
-    solve opts _ _ wanted = do { 
+    initialize = tcPluginIO $ newIORef (Set.empty :: Set TySetTy)
+    solve :: IORef (Set TySetTy) -> [Ct] -> [Ct] -> [Ct] -> TcPluginM TcPluginResult
+    solve tried_ref given derived wanted = do { 
           ; dflags <- unsafeTcPluginTcM getDynFlags
           ; let pprDebug :: Outputable a => String -> a -> TcPluginM ()
                 pprDebug str a =
                    when debug $
                       tcPluginIO $ putStrLn (str ++ " " ++ showSDoc dflags (ppr a))
+          ; pprDebug "Solving" empty
+          ; mapM_ (pprDebug "Given:") given
+          ; mapM_ (pprDebug "Derived:") derived
           ; mapM_ (pprDebug "Wanted:") wanted
           ; tyCons <- mapM getTLETyCon (symmetricIdempotentAssociativeTyCons ++ additionalCons)
-          ; (proofs, new) <- (concat <$>) . unzip . catMaybes <$> mapM (solveTLE tyCons) wanted
-          ; mapM_ (pprDebug "Sols:") (zip proofs new)
+          ; tried <- tcPluginIO $ readIORef tried_ref
+          ; (proofs, new) <- (concat <$>) . unzip . catMaybes <$> mapM (solveTLE tried tyCons) wanted
+          ; tcPluginIO $ writeIORef tried_ref (tried `Set.union` (Set.fromList $ map (TST . ctPred) new))
+          ; mapM_ (pprDebug "Proofs:") proofs
+          ; mapM_ (pprDebug "New:") new
           ; return $ TcPluginOk proofs new }
     stop _ = return ()
 
-solveTLE :: [Name] -> Ct -> TcPluginM (Maybe ((EvTerm, Ct), [Ct]))
-solveTLE tyCons ct@(CNonCanonical{}) =
+solveTLE :: Set TySetTy -> [Name] -> Ct -> TcPluginM (Maybe ((EvTerm, Ct), [Ct]))
+solveTLE tried tyCons ct@(CNonCanonical{}) =
   case splitTyConApp_maybe (ctPred ct) of
       Just (topCon, [lhs_kind,rhs_kind,lhs_ty,rhs_ty])  |
                (isEqPrimPred (ctPred ct) && lhs_kind `eqType` rhs_kind) ->
-                     let check = check' tyCons topCon lhs_kind
-                     in (check lhs_ty rhs_ty) `orMaybeM` (check rhs_ty lhs_ty)
+                     let check = check' tried tyCons topCon lhs_kind
+                     in check rhs_ty lhs_ty `orMaybeM` check rhs_ty lhs_ty
       _ -> return Nothing
   where
-    check' :: [Name] -> TyCon -> Kind -> Type -> Type -> TcPluginM (Maybe ((EvTerm, Ct),[Ct]))
-    check' tyCons top_con kind lhs_ty rhs_ty =
+    check' :: Set TySetTy -> [Name] -> TyCon -> Kind -> Type -> Type -> TcPluginM (Maybe ((EvTerm, Ct),[Ct]))
+    check' tried tyCons top_con kind lhs_ty rhs_ty =
         case splitTyConApp_maybe rhs_ty of
            Just (tc, [n1,n2]) | getName tc `elem` tyCons ->
-               if n1 `eqType` n2 
-               then do -- idempotent: op a a = a 
-                      let new_pred = (mkTyConApp top_con [kind, kind, n1, lhs_ty])
-                          sol = (evCoercion $ mkReflCo Nominal (mkTyConApp tc [n1,n2]), ct)
-                      newCt <- CNonCanonical <$> newWanted (ctLoc ct) new_pred
-                      let located = newCt `setCtLoc` (ctLoc ct)
-                      return $ Just (sol, [located])
-               else  -- op (op a b) a = op a (op b b)
-                     let checkNested ty1 ty2 =
-                           case splitTyConApp_maybe ty1 of
-                             Just (tc2, [a,b]) | tc2 == tc && (a `eqType` ty2 || b `eqType` ty2) -> do
-                                   let unnested = mkTyConApp tc [ty2, if a `eqType` ty2 then b else a]
-                                       new_pred = mkTyConApp top_con [kind, kind, lhs_ty, unnested]
-                                       sol = (evCoercion $ mkReflCo Nominal $
-                                                   mkTyConApp top_con [kind, kind, rhs_ty, unnested] 
-                                               ,ct)
-                                   newCt <- CNonCanonical <$> newWanted (ctLoc ct) new_pred
-                                   let located = newCt `setCtLoc` (ctLoc ct)
-                                   return $ Just (sol, [located])
-                             _ -> return Nothing
-                     in checkNested n1 n2 `orMaybeM` checkNested n2 n1 
+            let -- Symmetric: op a a = a
+                checkIdempotent ty1 ty2 = 
+                  case splitTyConApp_maybe ty1 of
+                    -- Shortcut when we don't have to solve any type familes
+                    _ | ty1 `eqType` ty2 ->
+                      return $ Just ((evCoercion $ mkReflCo Nominal $ mkTyConApp top_con [ty1, ty2], ct), [])
+                    -- Avoid trying to construct the infinite type:
+                    Just (tc2, _) | tc2 == tc  &&
+                                    isTyVarTy ty2 && 
+                                    (getTyVar "Impossible!" ty2) `elem`
+                                    (tyCoVarsOfTypeWellScoped ty1) ->
+                        return Nothing
+                    Just (tc2, [a,b]) | tc2 == tc -> do
+                      let np1 = mkTyConApp top_con [kind, kind, ty1, ty2]
+                          np2 = mkTyConApp top_con [kind, kind, ty1, lhs_ty]
+                          sol = (evCoercion $ mkReflCo Nominal $
+                                   mkTyConApp top_con [kind, kind, rhs_ty, np1]
+                                , ct)
+                      tcPluginIO $ putStrLn "Try Idempotent" 
+                      cts <- mapM (newNonCanonicalCt (ctLoc ct)) [np1,np2]
+                      (tcPluginIO $ putStrLn $ showSDocUnsafe $ ppr cts)
+                      return $ if (TST np1) `Set.member` tried then Nothing else Just (sol, cts)
+                    _ -> return Nothing
+                -- Associative: op (op a b) c = op a (op b c)
+                checkAssociative ty1 ty2 =
+                  case splitTyConApp_maybe ty1 of
+                    Just (tc2, [a,b]) | tc2 == tc -> do
+                      let unnested = mkTyConApp tc [a, mkTyConApp tc [b, ty2]]
+                          new_pred = mkTyConApp top_con [kind, kind, unnested, lhs_ty]
+                          sol = (evCoercion $ mkReflCo Nominal $
+                                 mkTyConApp top_con [kind, kind, rhs_ty, unnested], ct)
+                      newCt <- newNonCanonicalCt (ctLoc ct) new_pred
+                      return $ if (TST new_pred) `Set.member` tried then Nothing else Just (sol, [newCt])
+                    _ -> return Nothing
+               -- Symmetric: op a b = op b a
+                checkSymmetric ty1 ty2 = do
+                   let new_pred = mkTyConApp top_con [kind, kind, mkTyConApp tc [ty2, ty1], lhs_ty]
+                       ev_pred = mkTyConApp top_con [kind, kind, rhs_ty, mkTyConApp tc [ty2, ty1]]
+                       sol = (evCoercion $ mkReflCo Nominal ev_pred, ct)
+                   newCt <- newNonCanonicalCt (ctLoc ct) new_pred
+                   return $ if (TST new_pred) `Set.member` tried then Nothing else Just (sol, [newCt])
+            in checkIdempotent n1 n2 `orMaybeM` checkAssociative n1 n2 `orMaybeM` checkSymmetric n1 n2
            _ -> return Nothing
-solveTLE _ _ = return Nothing
+solveTLE _ _ _ = return Nothing
+
+newNonCanonicalCt :: CtLoc -> PredType -> TcPluginM Ct
+newNonCanonicalCt loc ty = (flip setCtLoc loc . CNonCanonical) <$> newWanted loc ty
 
 orMaybeM :: Monad m => m (Maybe a) -> m (Maybe a) -> m (Maybe a)
 orMaybeM a1 a2 = do res <- a1

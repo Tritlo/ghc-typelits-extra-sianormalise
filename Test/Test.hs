@@ -2,8 +2,8 @@
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.Extra.Solver #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.Extra.SIA.Solver 
-                -fplugin-opt=GHC.TypeLits.Extra.SIA.Solver:--tc=Min
                 -fplugin-opt=GHC.TypeLits.Extra.SIA.Solver:debug #-}
+{-# OPTIONS_GHC -fconstraint-solver-iterations=10 #-}
 {-# LANGUAGE TypeFamilies #-}
 module Main where
 
@@ -14,6 +14,9 @@ import GHC.TypeLits.Extra
 
 f :: Max (Max n1 n2) n1 ~ Max n1 n2 => IO ()
 f = print "works!"
+
+f6 :: Max (Max n1 n2) n1 ~ Max n1 n2 => IO ()
+f6 = print "works!"
 
 f2 :: Max n1 (Max n1 n2) ~ Max n1 n2 => IO ()
 f2 = print "works!"
@@ -31,4 +34,4 @@ g :: Max n n ~ n => IO ()
 g = print "works!"
 
 main :: IO ()
-main = f >> f2 >> f3 >> f4 >> f5 >> g
+main = f >> f2 >> f3 >> f4 >> f5 >> f6 >> g

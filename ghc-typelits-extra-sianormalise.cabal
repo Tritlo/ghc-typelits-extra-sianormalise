@@ -7,6 +7,7 @@ library
   default-language: Haskell2010
   build-depends: base >= 4 && < 5,
                  ghc >= 8 && < 9,
+                 containers >= 0.6 && < 0.7,
                  ghc-typelits-extra >= 0.4 && < 0.5
   exposed-modules:
     GHC.TypeLits.Extra.SIA.Solver

@@ -7,9 +7,7 @@
 {-# LANGUAGE TypeFamilies #-}
 module Main where
 
-
 import GHC.TypeLits
-
 import GHC.TypeLits.Extra
 
 f :: Max (Max n1 n2) n1 ~ Max n1 n2 => IO ()

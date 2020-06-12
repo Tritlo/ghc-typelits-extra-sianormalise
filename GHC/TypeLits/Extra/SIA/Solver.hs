@@ -1,4 +1,5 @@
 -- Copyright (c) 2020 Matthías Páll Gissurarson
+{-# LANGUAGE TypeFamilies, KindSignatures, PolyKinds #-}
 module GHC.TypeLits.Extra.SIA.Solver where
 
 import GhcPlugins hiding (TcPlugin)
@@ -13,6 +14,7 @@ import Data.IORef
 import Data.Function (on)
 import Data.Set (Set)
 import qualified Data.Set as Set
+import TyCoRep (UnivCoProvenance(..))
 
 import Data.List (isPrefixOf)
 
@@ -30,7 +32,6 @@ instance Eq TySetTy where
 
 instance Ord TySetTy where
   compare (TST ty1) (TST ty2) = nonDetCmpType ty1 ty2
-
 
 plugin :: Plugin
 plugin = defaultPlugin { tcPlugin = Just . extraExtraPlugin
@@ -81,7 +82,7 @@ solveTLE tried tyCons ct@(CNonCanonical{}) =
                   case splitTyConApp_maybe ty1 of
                     -- Shortcut when we don't have to solve any type familes
                     _ | ty1 `eqType` ty2 ->
-                      return $ Just ((evCoercion $ mkReflCo Nominal $ mkTyConApp top_con [ty1, ty2], ct), [])
+                      return $ Just ((mkProof "Idempotent" Nominal ty1 ty2, ct), [])
                     -- Avoid trying to construct the infinite type:
                     Just (tc2, _) | tc2 == tc  &&
                                     isTyVarTy ty2 && 
@@ -91,9 +92,7 @@ solveTLE tried tyCons ct@(CNonCanonical{}) =
                     Just (tc2, [a,b]) | tc2 == tc -> do
                       let np1 = mkTyConApp top_con [kind, kind, ty1, ty2]
                           np2 = mkTyConApp top_con [kind, kind, ty1, lhs_ty]
-                          sol = (evCoercion $ mkReflCo Nominal $
-                                   mkTyConApp top_con [kind, kind, rhs_ty, np1]
-                                , ct)
+                          sol = (mkProof "Idempotent" Nominal np1 np2, ct)
                       tcPluginIO $ putStrLn "Try Idempotent" 
                       cts <- mapM (newNonCanonicalCt (ctLoc ct)) [np1,np2]
                       (tcPluginIO $ putStrLn $ showSDocUnsafe $ ppr cts)
@@ -105,16 +104,15 @@ solveTLE tried tyCons ct@(CNonCanonical{}) =
                     Just (tc2, [a,b]) | tc2 == tc -> do
                       let unnested = mkTyConApp tc [a, mkTyConApp tc [b, ty2]]
                           new_pred = mkTyConApp top_con [kind, kind, unnested, lhs_ty]
-                          sol = (evCoercion $ mkReflCo Nominal $
-                                 mkTyConApp top_con [kind, kind, rhs_ty, unnested], ct)
+                          sol = (mkProof "Associative" Nominal rhs_ty unnested, ct)
                       newCt <- newNonCanonicalCt (ctLoc ct) new_pred
                       return $ if (TST new_pred) `Set.member` tried then Nothing else Just (sol, [newCt])
                     _ -> return Nothing
                -- Symmetric: op a b = op b a
                 checkSymmetric ty1 ty2 = do
-                   let new_pred = mkTyConApp top_con [kind, kind, mkTyConApp tc [ty2, ty1], lhs_ty]
-                       ev_pred = mkTyConApp top_con [kind, kind, rhs_ty, mkTyConApp tc [ty2, ty1]]
-                       sol = (evCoercion $ mkReflCo Nominal ev_pred, ct)
+                   let sym_ty = mkTyConApp tc [ty2, ty1]
+                       new_pred = mkTyConApp top_con [kind, kind, sym_ty, lhs_ty]
+                       sol = (mkProof "Symmetric" Nominal rhs_ty sym_ty, ct)
                    newCt <- newNonCanonicalCt (ctLoc ct) new_pred
                    return $ if (TST new_pred) `Set.member` tried then Nothing else Just (sol, [newCt])
             in checkIdempotent n1 n2 `orMaybeM` checkAssociative n1 n2 `orMaybeM` checkSymmetric n1 n2
@@ -129,6 +127,9 @@ orMaybeM a1 a2 = do res <- a1
                     case res of
                       Just _ -> return res
                       _ -> a2
+
+mkProof :: String -> Role -> Type -> Type -> EvTerm
+mkProof str role ty1 ty2 = evCoercion $ mkUnivCo (PluginProv str) role ty1 ty2
 
 getTLETyCon :: String -> TcPluginM Name 
 getTLETyCon name =

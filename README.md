@@ -16,3 +16,9 @@ operations from `GHC.TypeLits.Extra` can be added by adding e.g.:
 {-# OPTIONS_GHC -fplugin-opt=GHC.TypeLits.Extra.SIA.Solver:--tc=Max #-}
 
 ```
+
+Future work:
+
+We could define type families such as `Idempotent (Max _ _)`, `Symmetric (Min _ _)`,
+`Idempotent (Max _ _)` which users could define instances for, and the plugin would
+then solve for the appropriate law for those operators.

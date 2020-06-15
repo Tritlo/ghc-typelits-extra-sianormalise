@@ -93,11 +93,11 @@ solveTLE tried tyCons ct@(CNonCanonical{}) =
       Just (topCon, [lhs_kind,rhs_kind,lhs_ty,rhs_ty])  |
                (isEqPrimPred (ctPred ct) && lhs_kind `eqType` rhs_kind) ->
                      let check = check' tried tyCons topCon lhs_kind
-                     in check rhs_ty lhs_ty `orMaybeM` check lhs_ty rhs_ty
+                     in check True rhs_ty lhs_ty `orMaybeM` check False lhs_ty rhs_ty
       _ -> return Nothing
   where
-    check' :: Set TySetTy -> [Name] -> TyCon -> Kind -> Type -> Type -> TcPluginM (Maybe ((EvTerm, Ct),[Ct]))
-    check' tried tyCons top_con kind lhs_ty rhs_ty =
+    check' :: Set TySetTy -> [Name] -> TyCon -> Kind -> Bool -> Type -> Type -> TcPluginM (Maybe ((EvTerm, Ct),[Ct]))
+    check' tried tyCons top_con kind flip lhs_ty rhs_ty =
         case splitTyConApp_maybe rhs_ty of
            Just (tc, [n1,n2]) | getName tc `elem` tyCons ->
             let -- Symmetric: op a a = a
@@ -115,9 +115,9 @@ solveTLE tried tyCons ct@(CNonCanonical{}) =
                     Just (tc2, [a,b]) | tc2 == tc -> do
                       let np1 = mkTyConApp top_con [kind, kind, ty1, ty2]
                           np2 = mkTyConApp top_con [kind, kind, ty1, lhs_ty]
-                          sol = (mkProof "Idempotent" Nominal np1 np2, ct)
+                          (l,r) = if flip then (rhs_ty, lhs_ty) else (lhs_ty, rhs_ty)
+                          sol = (mkProof "sianormalise-idempotent" Nominal l r, ct)
                       cts <- mapM (newNonCanonicalCt (ctLoc ct)) [np1,np2]
-                      (tcPluginIO $ putStrLn $ showSDocUnsafe $ ppr cts)
                       return $ if (TST np1) `Set.member` tried then Nothing else Just (sol, cts)
                     _ -> return Nothing
                 -- Associative: op (op a b) c = op a (op b c)
@@ -126,15 +126,18 @@ solveTLE tried tyCons ct@(CNonCanonical{}) =
                     Just (tc2, [a,b]) | tc2 == tc -> do
                       let unnested = mkTyConApp tc [a, mkTyConApp tc [b, ty2]]
                           new_pred = mkTyConApp top_con [kind, kind, unnested, lhs_ty]
-                          sol = (mkProof "Associative" Nominal rhs_ty unnested, ct)
+                          (l,r) = if flip then (rhs_ty, lhs_ty) else (lhs_ty, rhs_ty)
+                          sol = (mkProof "sianormalise-associative" Nominal l r, ct)
                       newCt <- newNonCanonicalCt (ctLoc ct) new_pred
                       return $ if (TST new_pred) `Set.member` tried then Nothing else Just (sol, [newCt])
                     _ -> return Nothing
                -- Symmetric: op a b = op b a
                 checkSymmetric ty1 ty2 = do
                    let sym_ty = mkTyConApp tc [ty2, ty1]
+                       non_sym_ty = mkTyConApp tc [ty1, ty2]
                        new_pred = mkTyConApp top_con [kind, kind, sym_ty, lhs_ty]
-                       sol = (mkProof "Symmetric" Nominal rhs_ty sym_ty, ct)
+                       (l,r) = if flip then (rhs_ty, lhs_ty) else (lhs_ty, rhs_ty)
+                       sol = (mkProof "sianormalise-symmetric" Nominal l r, ct)
                    newCt <- newNonCanonicalCt (ctLoc ct) new_pred
                    return $ if (TST new_pred) `Set.member` tried then Nothing else Just (sol, [newCt])
             in checkIdempotent n1 n2 `orMaybeM` checkAssociative n1 n2 `orMaybeM` checkSymmetric n1 n2

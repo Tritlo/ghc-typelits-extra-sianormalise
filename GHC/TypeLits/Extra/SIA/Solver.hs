@@ -93,7 +93,7 @@ solveTLE tried tyCons ct@(CNonCanonical{}) =
       Just (topCon, [lhs_kind,rhs_kind,lhs_ty,rhs_ty])  |
                (isEqPrimPred (ctPred ct) && lhs_kind `eqType` rhs_kind) ->
                      let check = check' tried tyCons topCon lhs_kind
-                     in check rhs_ty lhs_ty `orMaybeM` check rhs_ty lhs_ty
+                     in check rhs_ty lhs_ty `orMaybeM` check lhs_ty rhs_ty
       _ -> return Nothing
   where
     check' :: Set TySetTy -> [Name] -> TyCon -> Kind -> Type -> Type -> TcPluginM (Maybe ((EvTerm, Ct),[Ct]))

@@ -28,8 +28,12 @@ f4 = print "works!"
 f5 :: Max (Max n1 n2) (Max n2 n1) ~ Max n1 n2 => IO ()
 f5 = print "works!"
 
+
+f7 :: Max n nv ~ Max (Max n nv) nv => IO ()
+f7 = print "hey"
+
 g :: Max n n ~ n => IO ()
 g = print "works!"
 
 main :: IO ()
-main = f >> f2 >> f3 >> f4 >> f5 >> f6 >> g
+main =  f >> f2 >> f3 >> f4 >> f5 >> f6 >> f7 >> g

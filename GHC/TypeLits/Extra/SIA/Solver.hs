@@ -1,22 +1,45 @@
 -- Copyright (c) 2020 Matthías Páll Gissurarson
-{-# LANGUAGE TypeFamilies, KindSignatures, PolyKinds #-}
+{-# LANGUAGE TypeFamilies, KindSignatures, PolyKinds, CPP #-}
 module GHC.TypeLits.Extra.SIA.Solver where
 
-import GhcPlugins hiding (TcPlugin)
-import TcRnTypes (TcPlugin(..),TcPluginResult(TcPluginOk))
-import TcPluginM 
-import Constraint
 import Data.Maybe (catMaybes)
 import Control.Monad (when, guard)
-import TcEvidence
-import Predicate (isEqPrimPred)
-import Data.IORef 
+import Data.IORef
 import Data.Function (on)
 import Data.Set (Set)
 import qualified Data.Set as Set
-import TyCoRep (UnivCoProvenance(..))
 
 import Data.List (isPrefixOf)
+
+#if __GLASGOW_HASKELL__ > 810
+
+import GHC.Plugins hiding (TcPlugin)
+import GHC.Tc.Plugin
+import GHC.Tc.Types.Evidence
+import GHC.Tc.Types.Constraint
+import GHC.Core.TyCo.Rep
+
+#else
+
+import GhcPlugins hiding (TcPlugin)
+import TcPluginM
+import TcEvidence
+import TyCoRep (UnivCoProvenance(..))
+import TcRnTypes
+
+#if __GLASGOW_HASKELL__ < 810
+
+isEqPrimPred = isCoVarType
+instance Outputable SDoc where
+  ppr x = x
+
+#else
+
+import Predicate (isEqPrimPred)
+import Constraint
+
+#endif
+#endif
 
 symmetricIdempotentAssociativeTyCons :: [String]
 symmetricIdempotentAssociativeTyCons = ["Max", "Min"]
